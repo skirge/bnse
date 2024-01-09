@@ -27,6 +27,9 @@ from string import ascii_uppercase, ascii_lowercase, digits
 
 MAX_PATTERN_LENGTH = 20280
 
+def indent(level):
+    return "  >"*level
+
 class MaxLengthException(Exception):
     pass
 
@@ -589,42 +592,54 @@ class UIPlugin(PluginCommand):
             for k, v in p.items():
                 binja.log_info("[+] {0}: {1}".format(k, v))
 
-    def step_up(self, var, func_caller):
-        next_instr = func_caller.mlil.get_ssa_var_definition(var)
+
+    def step_up(self, var, func_caller, visited, level=0):
+        visited.add(func_caller)
+        if isinstance(var, binja.variable.Variable):
+            next_instr = func_caller.mlil.get_var_definitions(var)[0]
+        else:
+            next_instr = func_caller.mlil.get_ssa_var_definition(var)
         if next_instr:
-            print(hex(next_instr.address), next_instr)
+            print(indent(level),hex(next_instr.address), next_instr)
             var_read = next_instr.ssa_form.vars_read
             if var_read:
-                print(var_read[0])
-                self.step_up(var_read[0], func_caller)
+                for v in var_read:
+                    print(indent(level),v)
+                    self.step_up(v, func_caller,visited, level+1)
 
 
-    def find_arg_origin(self, bv, addr):
+    def find_arg_origin(self, bv, func):
         """
         Parameters
         ----------
         bv : BinaryView instance
         addr: BinaryView address
         """
-        print('addr', hex(addr))
-        func = bv.get_function_at(addr)
-        if(func == None or type(func) != binja.function.Function):
-            self.display_message("Error", "This is not a function!")
-            return
+        #func = bv.get_function_at(addr)
+        # print('addr', hex(addr))
+        # if(func == None or type(func) != binja.function.Function):
+        #     print(f"{func} {type(func)}")
+        #     self.display_message("Error", "This is not a function!")
+        #     return
         # func_symbol = bv.get_symbol_by_raw_name("strcpy")
         # func_refs = [(ref.function, ref.address) for ref in bv.get_code_refs(func_symbol.address)]
         #func_refs = [ (ref.function, ref.address) for ref in bv.get_code_refs(bv.symbols[func.name].address)]
         refs = [bv.get_code_refs(x.address) for x in bv.symbols.get(func.name)]
         func_refs = [(item.function, item.address) for sublist in refs for item in sublist]
-        print("func refs", func_refs)
+        print("[*] func refs", func_refs)
         for function, addr in func_refs:
             try:
                 func_ssa = function.get_low_level_il_at(addr).mlil.ssa_form
-                binja.log_info("[+] Function as SSA {0}".format(
-                    func_ssa))
+                binja.log_info("[+] Function {}@{} as SSA {}".format(
+                    function.name,hex(function.start),func_ssa))
                 for param in func_ssa.params:
+                    visited = set()
                     print("Current param {0}".format(param))
-                    self.step_up(param.src, function)
+                    if function in visited:
+                        binja.log_info(f"Already visited:{function}")
+                        continue
+                    else:
+                        self.step_up(param.src, function,visited)
             except AttributeError as e:
                 binja.log_info("Error, {0}".format(e))
                 pass
@@ -647,18 +662,17 @@ class UIPlugin(PluginCommand):
         #     binja.log_info("Error, {0}".format(e))
         #     pass
 
-    def set_function_params(self, bv, addr):
+    def set_function_params(self, bv, func):
         """
         Parameters
         ----------
         bv : BinaryView instance
         addr: BinaryView address
         """
-
-        func = bv.get_function_at(addr)
-        if(func == None or type(func) != binja.function.Function):
-            self.display_message("Error", "This is not a function!")
-            return
+        # func = bv.get_function_at(addr)
+        # if(func == None or type(func) != binja.function.Function):
+        #     self.display_message("Error", "This is not a function!")
+        #     return
         params_len = len(func.parameter_vars)
         binja.log_info("[+] Function has {0} params".format(
             params_len))
@@ -1168,7 +1182,7 @@ class VulnerabilityExplorer(MainExplorer):
             else:
                 if(not silence):
                     binja.log_info(
-                        "[-] Register ${0} not overwrite by pattern".format(arg))
+                        "[-] Register ${0} not overwriten by pattern".format(arg))
         if(bool(report)):
             interaction.show_markdown_report(
                 "Vulnerability Info Report", self.get_vuln_report(report))
@@ -1500,9 +1514,9 @@ PluginCommand.register("Explorer\WR941ND\ROP\Shared Library\Select",
                                 "Try to build exploit rop chain", ui_plugin.choice_menu)
 PluginCommand.register(
     "Explorer\WR941ND\Library\Set Library Path", "Add LD_PATH", ui_plugin.set_ld_path)
-PluginCommand.register_for_address(
-    "Explorer\WR941ND\Function\Set Params", "Add function params", ui_plugin.set_function_params)
-PluginCommand.register_for_address(
-    "Explorer\WR941ND\Function\Find Param Origin", "Find origin of function param", ui_plugin.find_arg_origin)
+PluginCommand.register_for_function(
+    "Explorer\Function\Set Params", "Add function params", ui_plugin.set_function_params)
+PluginCommand.register_for_function(
+    "Explorer\Function\Find Param Origin", "Find origin of function param", ui_plugin.find_arg_origin)
 PluginCommand.register(
         "Explorer\WR941ND\Clear All", "Clear data", ui_plugin.clear)
