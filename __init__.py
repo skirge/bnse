@@ -5,6 +5,7 @@ import archinfo
 import tempfile
 import sys
 import pprint
+import codecs
 from binaryninja.highlight import HighlightColor
 from binaryninja.enums import HighlightStandardColor, MessageBoxButtonSet, MessageBoxIcon
 from binaryninja.plugin import PluginCommand, BackgroundTaskThread, BackgroundTask
@@ -31,15 +32,14 @@ import os
 os.environ['PWNLIB_NOTERM'] = 'True'
 from pwnlib.util import cyclic
 
-# import logging
-# logging.getLogger('angr').setLevel('DEBUG')
-# logging.getLogger('angr.sim_manager').setLevel('DEBUG')
+import logging
+logging.getLogger('angr').setLevel('ERROR')
 
+add_options={angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, \
+            angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS, \
+            angr.options.CONSTRAINT_TRACKING_IN_SOLVER }
 
-#add_options={angr.options.CGC_ZERO_FILL_UNCONSTRAINED_MEMORY, \
-#                         angr.options.CONSTRAINT_TRACKING_IN_SOLVER} #  + angr.options.unicorn
-
-add_options = {}
+#add_options = angr.options.modes['tracing']
 
 def indent(level):
     return "  >"*level
@@ -76,9 +76,9 @@ def u32(data, endian="big"):
 
 def pattern_search(search_pattern):
     try:
-        return cyclic.cyclic_find(search_pattern)
-    except:
         return cyclic.cyclic_find(search_pattern, len(search_pattern))
+    except:
+        return cyclic.cyclic_find(search_pattern)
 
 class Explorer(ABC):
     """
@@ -243,7 +243,7 @@ class UIPlugin(PluginCommand):
 
         try:
             proj = angr.Project(bv.file.original_filename, ld_path=[
-                                BackgroundTaskManager.ld_path], use_system_libs=False)
+                                BackgroundTaskManager.ld_path], use_sim_procedures=False, use_system_libs=False)
             libs = list(proj.loader.shared_objects.keys())[1::]
             mapped_libs = {}
             for i in range(0, len(libs)):
@@ -276,7 +276,10 @@ class UIPlugin(PluginCommand):
         else:
             data = registers
         for reg in data:
-            binja.log_info("${0}: {1}".format(reg, state.regs.get(reg)))
+            regv = state.regs.get(reg)
+            if hasattr(regv, "__len__") and len(regv) > 100:
+                regv = "<TOO LONG>"
+            binja.log_info("${0}: {1}".format(reg, regv))
 
     @classmethod
     def color_path(self, bv, addr):
@@ -374,6 +377,51 @@ class UIPlugin(PluginCommand):
                              MessageBoxButtonSet.OKButtonSet, MessageBoxIcon.WarningIcon)
             return
 
+    def set_avoid_address(self, bv, addr):
+        """
+        Parameters
+        ----------
+        bv : BinaryView instance
+        address : BinaryView address
+        """
+
+        try:
+            blocks = bv.get_basic_blocks_at(addr)
+            for block in blocks:
+                if(addr not in self.avoid and self.avoid):
+                    # TODO: more avoid addresses?
+                    block.function.set_auto_instr_highlight(
+                        addr, HighlightStandardColor.RedHighlightColor)
+                    self.avoid.add(addr)
+                    BackgroundTaskManager.avoid_addr.add(self.avoid)
+                else:
+                    block.function.set_auto_instr_highlight(
+                        addr, HighlightStandardColor.RedHighlightColor)
+                    self.avoid.add(addr)
+                    BackgroundTaskManager.avoid.add(self.avoid)
+            binja.log_info("Avoid: 0x%x" % addr)
+        except:
+            show_message_box("Plugin", "Error please open git issue !",
+                             MessageBoxButtonSet.OKButtonSet, MessageBoxIcon.ErrorIcon)
+
+    def clear_avoid_address(self, bv):
+        """
+        Parameters
+        ----------
+        bv : BinaryView instance
+        """
+        
+        if self.avoid:
+            for addr in self.avoid:
+                end_block = bv.get_basic_blocks_at(addr)
+                self._avoid_address(end_block, addr)
+                self.avoid.remove(addr)
+                BackgroundTaskManager.avoid.remove(addr)
+        else:
+            show_message_box("Plugin", "Avoid addresses not set !",
+                             MessageBoxButtonSet.OKButtonSet, MessageBoxIcon.WarningIcon)
+            return
+
     def set_end_address(self, bv, addr):
         """
         Parameters
@@ -464,7 +512,9 @@ class UIPlugin(PluginCommand):
         mapped_types = []
         for param in params:
             mapped_types.append(
-                {'param': param.name, 'type': types[param.type.type_class], 'value': None, 'b_overflow': 0, 'pattern_create': 0, 'symbolic': 0})
+                {'param': param.name, 'type': types[param.type.type_class], \
+                 'value': None, 'b_overflow': 0, 'pattern_create': 0, \
+                 'symbolic': 0, 'printable': 1, 'len':1024})
         return mapped_types
 
     def _generate_menu_text_fields(self, arg_types):
@@ -487,16 +537,21 @@ class UIPlugin(PluginCommand):
                 text_field = interaction.TextLineField("{0} => type: {1}".format(arg['param'], arg['type']))
             # TODO may run 2 times: concrete and symbolic
             overflow_field = interaction.ChoiceField(
-                "Run with symbolic memory corupption checker (TODO)", ["No", "Yes"])
+                "Run with symbolic memory corruption checker", ["No", "Yes"])
             pattern_field = interaction.ChoiceField(
                 "Send Pattern", ["No", "Yes"])
             symbolic_field = interaction.ChoiceField(
                 "Symbolic", ["No", "Yes"])
-            self.number_of_fields = 4
+            printable_field = interaction.ChoiceField(
+                "printable", ["No", "Yes"])
+            len_field = interaction.IntegerField("len", default=1024)
+            self.number_of_fields = 6
             menu.append(text_field)
             menu.append(overflow_field)
             menu.append(pattern_field)
             menu.append(symbolic_field)
+            menu.append(printable_field)
+            menu.append(len_field)
         return menu
 
     def _get_menu_results(self, menu_items, param_num):
@@ -514,7 +569,7 @@ class UIPlugin(PluginCommand):
         """
 
         result = [x.result for x in menu_items]
-        keys = ['value', 'b_overflow', 'pattern_create', 'symbolic'] * param_num
+        keys = ['value', 'b_overflow', 'pattern_create', 'symbolic', 'printable', 'len'] * param_num
         return list(zip(keys, result))
 
     def _convert_menu_results(self, input_data, mapped_types, size):
@@ -532,88 +587,28 @@ class UIPlugin(PluginCommand):
         ------
             list of mapped types and values for supported key:value pairs
         """
-        # print(f"input_data: {input_data}")
-        # print(f"mapped_types: {mapped_types}")
-        # print(f"size: {size}")
+        binja.log_debug(f"input_data: {input_data}")
+        binja.log_debug(f"mapped_types: {mapped_types}")
+        binja.log_debug(f"size: {size}")
         result = []
         temp = [{item[0]:item[1]} for item in input_data]
-        # print(f"temp:{temp}")
+        binja.log_debug(f"temp:{temp}")
         for i in range(0, len(temp), size):
             # TODO: make it not hardcoded
             d1 = dict(temp[i:i+size][0], **temp[i:i+size][1])
             d2 = dict(temp[i:i+size][1], **temp[i:i+size][2])
             d3 = dict(temp[i:i+size][2], **temp[i:i+size][3])
-            result.append(dict(d1, **dict(d2, **d3)))
-        print(f"result:{result}")
+            d4 = dict(temp[i:i+size][3], **temp[i:i+size][4])
+            d5 = dict(temp[i:i+size][4], **temp[i:i+size][5])
+            result.append(dict(d1, **dict(d2, **dict(d3, **dict(d4, **d5)))))
+        binja.log_debug(f"result:{result}")
         for i in range(0, len(mapped_types)):
             for k, v in mapped_types[i].items():
-                if k == 'b_overflow' or k == 'value' or k == 'pattern_create' or k == 'symbolic':
+                if k == 'b_overflow' or k == 'value' or k == 'pattern_create' \
+                    or k == 'symbolic' or k=='printable' or k=='len':
                     mapped_types[i][k] = result[i][k]
         return mapped_types
 
-    def _make_symbolic(self, params):
-        """
-        Parameters
-        ----------
-        params : list
-            list of results after function params UI provided
-        
-        Return
-        ------
-            Return pattern string
-        """
-
-        counter = 0
-        result = 0
-        for p in params:
-            if p['symbolic'] == 1:
-                counter += 1
-        if counter >= 1:
-            for p in params:
-                if p['symbolic'] == 1:
-                    result = interaction.get_int_input("Size: ", f"{p['param']} Symbolic size")
-                    p['value'] = claripy.BVS("symbolic_input",8*result)
-        binja.log_info("[+] symbolic size: {0}".format(result))
-        return result
-
-    def _pattern_create(self, params):
-        """
-        Parameters
-        ----------
-        params : list
-            list of results after function params UI provided
-        
-        Return
-        ------
-            Return pattern string
-        """
-
-        counter = 0
-        result = 0
-        for p in params:
-            if p['pattern_create'] == 1:
-                counter += 1
-        if counter >= 1:
-            # TODO: diff pattern for all
-            result = interaction.get_int_input("Size: ", "Pattern Create")
-            for p in params:
-                if p['pattern_create'] == 1:
-                    p['value'] = pattern_gen(result)
-        binja.log_info("[+] pattern size: {0}".format(result))
-        return result
-
-    def _display_converted_params(self, params):
-        """
-        Parameters
-        ----------
-        params : list
-            list of params to display at console log
-        """
-        for p in params:
-            for k, v in p.items():
-                if hasattr(v,'__len__') and len(v) > 512:
-                    v = "<TOO LONG>"
-                binja.log_info("[+] {0}: {1}".format(k, v))
 
 
     def step_up(self, var, func_caller, visited, level=0):
@@ -639,7 +634,7 @@ class UIPlugin(PluginCommand):
         addr: BinaryView address
         """
         #func = bv.get_function_at(addr)
-        # print('addr', hex(addr))
+        binja.log_debug('addr', hex(addr))
         # if(func == None or type(func) != binja.function.Function):
         #     print(f"{func} {type(func)}")
         #     self.display_message("Error", "This is not a function!")
@@ -709,9 +704,9 @@ class UIPlugin(PluginCommand):
         if menu:
             results = self._get_menu_results(menu_items[1::], params_len)
             converted = self._convert_menu_results(results, mapped_types, self.number_of_fields)
-            self._make_symbolic(converted)
-            self._pattern_create(converted)
-            self._display_converted_params(converted)
+            # self._make_symbolic(converted)
+            # self._pattern_create(converted)
+            # self._display_converted_params(converted)
             BackgroundTaskManager.func_params = converted
 
     @classmethod
@@ -868,13 +863,15 @@ class BackgroundTaskManager():
             print("BackgroundTaskManager start_addr: 0x{0:0x}, end_addr: 0x{1:0x}".format(
                 start_addr, end_addr))
             self.vulnerability_explorer = VulnerabilityExplorer(
-                bv, BackgroundTaskManager.start_addr, BackgroundTaskManager.end_addr, BackgroundTaskManager.prototype, ld_path=ld_path)
-            # binja.log_info("Session function params {0}".format(params))
+                bv, BackgroundTaskManager.start_addr, BackgroundTaskManager.end_addr,\
+                    BackgroundTaskManager.prototype, \
+                    ld_path=ld_path)
+            binja.log_info("Session function params {0}".format(params))
             args = self.vulnerability_explorer.set_args(params)
             func_params = self.vulnerability_explorer.get_params_list(
                 args, len(args.keys()))
-            # binja.log_info(
-                # "Parameters pass to function {0}".format(func_params))
+            binja.log_info(
+                "Parameters pass to function {0}".format(func_params))
             state = self.vulnerability_explorer.feed_function_state(
                 func_params)
             self.vulnerability_explorer.set_sim_manager(state)
@@ -908,7 +905,7 @@ class BackgroundTaskManager():
                 return
             print("BackrgoundTaskManager ld_path: {0}".format(ld_path))
             selected_opt = BackgroundTaskManager.selected_opt
-            self.proj = angr.Project(bv.file.original_filename, ld_path=[
+            self.proj = angr.Project(bv.file.original_filename, use_sim_procedures=False, ld_path=[
                 ld_path], use_system_libs=False)
             self.libc = self.proj.loader.shared_objects[selected_opt]
             print("LIBC", self.libc)
@@ -1012,20 +1009,24 @@ class VulnerabilityExplorer(MainExplorer):
         private, get report of vulnerability
     """
     
-    def __init__(self, bv, func_start_addr, func_end_addr, prototype, ld_path=None, use_system_libs=False):
+    def __init__(self, bv, func_start_addr, func_end_addr, prototype, avoid_addresses=[], ld_path=[], use_system_libs=False, use_sim_procedures=False):
+        binja.log_debug(f"Initializing VulnerabilityExplorer with params bv:{bv} start:{func_start_addr} end:{func_end_addr} prot:{prototype} avoid:{avoid_addresses} ld_path:{ld_path} use_system_libs:{use_system_libs} use_sim_procedures:{use_sim_procedures}")
         self.bv = bv
-        self.proj = angr.Project(self.bv.file.original_filename, ld_path=[
-            ld_path], use_system_libs=use_system_libs)
+        self.arch = bv.arch.name
+        self.use_sim_procedures = use_sim_procedures
+        self.ld_path=ld_path
+        self.use_sim_procedures=use_sim_procedures
+        self.proj = angr.Project(self.bv.file.original_filename, use_sim_procedures=use_sim_procedures,\
+            ld_path=ld_path, use_system_libs=use_system_libs)
+        self.avoid_addresses = avoid_addresses
         self.func_start_addr = self.proj.loader.min_addr + func_start_addr
         self.func_end_addr = self.proj.loader.min_addr + func_end_addr
         self.prototype = prototype
-        self.cfg = self.proj.analyses.CFGFast(
-            regions=[(self.func_start_addr, self.func_end_addr)])
+        self.cfg = self.proj.analyses.CFG(regions=[(self.func_start_addr, self.func_end_addr)])
         self.args = {}
         self.overflow = False
         self.has_leak = False
         self.params = None
-        self.symbolic_input = None
         self.proj.hook(self.func_end_addr, self.explore)
 
     def rva(self, addr):
@@ -1038,15 +1039,22 @@ class VulnerabilityExplorer(MainExplorer):
         state : angr SimState
             current state of execution
         """
-        #print("Explore start")
-        #print(f"Exploring PC:{hex(state.solver.eval(state.regs.pc, cast_to=int))}")
-        UIPlugin.color_path(self.bv, state.solver.eval(
-            self.rva(state.regs.pc), cast_to=int))
-        if state.solver.eval(state.regs.pc, cast_to=int) == self.func_end_addr:
-            UIPlugin.dump_regs(state, registers[self.bv.arch.name])
-            return True
-        #print("Explore end")
-        return False
+        binja.log_debug("Explore start")
+        pc = state.solver.eval(state.regs.pc, cast_to=int)  
+        binja.log_debug(f"Exploring PC:{hex(pc)} RVA:{hex(self.rva(pc))}")
+        UIPlugin.color_path(self.bv, self.rva(pc))
+        # we execute functions so let's check we passed return 
+        # or got back to ret_addr
+        if self.overflow:
+            if pc == 0:
+                print(f"Exploration finished! Came to 0x0 address")
+                return True
+        else:
+            if pc == self.func_end_addr:
+                print(f"Exploration finished! at {hex(pc)} RVA:{hex(self.rva(pc))}")
+                #UIPlugin.dump_regs(state, registers[self.bv.arch.name])
+                return True
+        binja.log_debug("Explore end")
 
     # for debugging
     def step_debug(self, simgr):
@@ -1077,48 +1085,60 @@ class VulnerabilityExplorer(MainExplorer):
                 pprint.pprint(state)
         return simgr
     
+    def exploitable(self, state, reg='pc'):
+        for i in range(state.arch.bits):
+            if not state.solver.symbolic(state.regs.get(reg)[i]):
+                return False
+        return True
+    
+    def partially_exploitable(self, state, reg='pc'):
+        count = 0
+        for i in range(state.arch.bits):
+            if state.solver.symbolic(state.regs.get(reg)[i]):
+                print("Symbolic bit {} possible in {}".format(i, reg))
+                count += 1
+        return count
+    
     def step_check_mem_corruption_symbolic(self, simgr):
         #self.step_debug(simgr)
-        #print("[*] Check symbolic memory corruption step")
+        binja.log_debug("[*] Check symbolic memory corruption step")
+        
         if simgr.unconstrained:
             print("[*] Step check mem corruption - unconstrained path")
             for path in simgr.unconstrained:
-                # TODO: arch specific
-                path.add_constraints(path.regs.pc == b"AAAAAAAA")
-                if path.satisfiable():
-                    stack_smash = path.solver.eval(self.symbolic_input, cast_to=bytes)
-                    try:
-                        index = stack_smash.index(b"AAAAAAAA")
-                        self.symbolic_padding = stack_smash[:index]
-                        binja.log.log_info(f"Found symbolic padding: {self.symbolic_padding}")
-                        binja.log.log_info(f"Successfully Smashed the Stack, Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
-                        simgr.stashes["mem_corrupt"].append(path)
-                    except ValueError:
-                        logger.warning("Could not find index of pc overwrite")
-                else:
-                    print("[-] Not satisfiable!")
+                if self.exploitable(path):
+                    simgr.stashes['mem_corrupt'].append(path)
                 simgr.stashes["unconstrained"].remove(path)
                 simgr.drop(stash="active")
-        #print("step done")
+
+        # if simgr.active:
+        #     path = simgr.active[0]
+        #     if self.exploitable(path):
+        #         simgr.stashes['mem_corrupt'].append(path)
+        #         #simgr.drop(stash="active")
+        #
+        # if simgr.errored:
+        #     print("[*] Step check mem corruption - errored path")
+        #     path = simgr.errored[0].state
+        #     if self.exploitable(path):
+        #         simgr.stashes['mem_corrupt'].append(path)
+
+        binja.log_debug("step done")
         return simgr
 
     def step_check_mem_corruption_pattern(self, simgr):
-        #print("[*] Check pattern memory corruption step")
+        binja.log_debug("[*] Check pattern memory corruption step")
         #self.step_debug(simgr)
         for state in simgr.active:
             pattern = state.solver.eval(state.regs.pc.reversed, cast_to=bytes)
             pattern2 = state.solver.eval(state.regs.pc, cast_to=bytes)
             if self._find_pattern(self.params, pattern):
-                binja.log_warn("[*] Buffer overflow detected !!!")
-                binja.log_warn(
-                    "[*] We can control $PC after {0} bytes !!!!".format(pattern_search(pattern.decode())))
                 simgr.stashes["mem_corrupt"].append(state)
+                simgr.drop(stash="active")
             if self._find_pattern(self.params, pattern2):
-                binja.log_warn("[*] Buffer overflow detected !!!")
-                binja.log_warn(
-                    "[*] We can control $PC after {0} bytes !!!!".format(pattern_search(pattern2.decode())))
                 simgr.stashes["mem_corrupt"].append(state)
-        #print("step done")
+                simgr.drop(stash="active")
+        binja.log_debug("step done")
         return simgr
 
     def check_stack_chk_fail(self, state):
@@ -1141,57 +1161,115 @@ class VulnerabilityExplorer(MainExplorer):
             binja.log_error(f"[!] VULN: Found printf leak at {return_target}!")
             self.simgr.stashes["format_strings"].append(state)
 
+    def generate_script_template(self):
+        tmpl = f"""
+        START_ADDR = {hex(self.rva(self.func_start_addr))}
+        END_ADDR = {hex(self.rva(self.func_end_addr))}
+        PROTOTYPE = "{self.prototype}"
+        AVOID = {self.avoid_addresses}
+        LD_PATH = {self.ld_path}
+        USE_SIM = {self.use_sim_procedures}
+    """
+        return tmpl
+
+    def hook_printf(self):
+        # may check for other logging functions
+        print("Setting hook for prinf")
+        if self.arch == 'x86_64':
+            if self.proj.loader.main_object.get_symbol("printf") is not None:
+                self.proj.hook_symbol("printf", self.analyze_printf_x86_64)
+        else:
+            raise "Unsupported arch for printf hook!"
+
+    def hook_stack_chk_fail(self):
+        # TODO: some bug on MacOS in CLE
+        print("Setting hook for __stack_chk_fail")
+        symb = self.proj.loader.main_object.get_symbol("__stack_chk_fail") 
+        if symb is not None:
+            if len(symb)==1:
+                self.proj.hook_symbol("__stack_chk_fail", self.check_stack_chk_fail)
+            else:
+                binja.log.log_error("[-] Multiple symbols for stack_chk_fail found!")
+
+    def generate_avoid_addresses(self):
+        avoid = []
+        avoid.append(self.proj.loader.min_addr)
+        for addr in self.avoid_addresses:
+            va = addr + self.proj.loader.min_addr
+            print(f"Avoid address: {hex(va)}")
+            avoid.append(va)
+        return avoid
+
     def run(self):
         print("VulnerabilityExplorer start")
+        print("=====================SCRIPT TEMPLATE=========================")
+        print(self.generate_script_template())
+        print("=====================SCRIPT END=============================")
         self.simgr.stashes["mem_corrupt"] = []
         self.simgr.stashes["format_strings"] = []
 
-        # may check for other logging functions
-        if self.bv.arch == 'x86_64':
-            if self.proj.loader.main_object.get_symbol("printf") is not None:
-                print("Setting hook for prinf")
-                self.proj.hook_symbol("printf", self.analyze_printf_x86_64)
-        
-        if self.proj.loader.main_object.get_symbol("__stack_chk_fail") is not None:
-            print("Setting hook for __stack_chk_fail")
-            self.proj.hook_symbol("__stack_chk_fail", self.check_stack_chk_fail)
+        # self.hook_printf()
+        # self.hook_stack_chk_fail()
 
         if self.overflow:
-            sm = self.simgr.explore(find=self.explore,step_func=self.step_check_mem_corruption_symbolic)
+            # use symbolic search for buffer overflows
+            print("Running in Search For Overflow mode!")
+            sm = self.simgr.explore(find=self.explore, avoid=self.generate_avoid_addresses(),\
+                                    step_func=self.step_check_mem_corruption_symbolic, num_find=1,\
+                                    cfg=self.cfg)
         else:
-            sm = self.simgr.explore(find=self.explore, step_func=self.step_check_mem_corruption_pattern)
+            # check with concrete pattern
+            print("Running in normal mode!")
+            sm = self.simgr.explore(find=self.explore,avoid=self.generate_avoid_addresses(),\
+                                    step_func=self.step_check_mem_corruption_pattern, num_find=1, \
+                                    cfg=self.cfg)
         test = sm.found
         print("Found states")
         print(test)
         if len(test) > 0:
             print("State found - stop", test)
-            print(sm.found)
-            found = sm.found[0]
-            # print("found", found)
-            # identify other influenced registers
+            found = test[0]
+            print(found)
+            UIPlugin.dump_regs(found, registers[self.bv.arch.name]) 
+            self._solve_symbolic_params(found)
+            self._identify_overflow_symbolic(found, registers[self.bv.arch.name])
             self._identify_overflow(found, registers[self.bv.arch.name])
+
         if len(self.simgr.stashes["mem_corrupt"])>0:
             print("Memory corruption state found!")
-            found = self.simgr.stashes["mem_corrupt"][0]
+            found = self.simgr.stashes["mem_corrupt"][-1]
             print(found)
+            UIPlugin.dump_regs(found, registers[self.bv.arch.name]) 
+            self._solve_symbolic_params(found)
+            self._identify_overflow_symbolic(found, registers[self.bv.arch.name])
             self._identify_overflow(found, registers[self.bv.arch.name])
 
         if len(self.simgr.stashes["format_strings"])>0:
             print("Memory corruption state found!")
-            found = self.simgr.stashes["format_strings"][0]
+            found = self.simgr.stashes["format_strings"][-1]
             print(found)
+            UIPlugin.dump_regs(found, registers[self.bv.arch.name]) 
+            self._solve_symbolic_params(found)
             self._identify_overflow(found, registers[self.bv.arch.name])
 
         print("Errored states")
         for state in self.simgr.errored:
             pprint.pprint(state.error)
+            pprint.pprint(state.traceback)
             pprint.pprint(state.state)
-            #self._identify_overflow(state.state, registers[self.bv.arch.name])
-
+            UIPlugin.dump_regs(state.state, registers[self.bv.arch.name]) 
+            self._solve_symbolic_params(state.state)
+            self._identify_overflow_symbolic(state.state, registers[self.bv.arch.name])
+            self._identify_overflow(state.state, registers[self.bv.arch.name])
+            
         print("Unconstrainted states")
         for state in self.simgr.unconstrained:
             pprint.pprint(state)
-            print(f"[-] State PC:{state.regs.pc}")
+            UIPlugin.dump_regs(state, registers[self.bv.arch.name]) 
+            self._solve_symbolic_params(state)
+            self._identify_overflow_symbolic(state, registers[self.bv.arch.name])
+            self._identify_overflow(state, registers[self.bv.arch.name])
+
         print("VulnerabilityExplorer done")
 
         
@@ -1205,17 +1283,29 @@ class VulnerabilityExplorer(MainExplorer):
         ------
             dictionary of angr mapped parameters
         """
-
+        
+        binja.log.log_debug(f"set_args:{args}")
+        self.original_args = args
+        self._make_symbolic(args)
+        self._pattern_create(args)
         counter = 0
         if args is not None:
             for item in args:
                 if item['type'] == 'pointer':
-                    p = angr.PointerWrapper(item.get('value'), buffer=True)
+                    # TODO: decode from hex escaped strings
+                    v = item.get('value')
+                    if not item.get('symbolic'): 
+                        if v == "NULL":
+                            binja.log_debug("{} is NULL pointer".format(item))
+                            p = 0
+                        else:
+                            v = codecs.decode(v, "unicode_escape")
+                            p = angr.PointerWrapper(v, buffer=True)
+                    else:
+                        p = angr.PointerWrapper(v, buffer=True)
                     self.args['arg'+str(counter)] = p
                 else:
                     self.args['arg'+str(counter)] = item.get('value')
-                if item['symbolic']:
-                    self.symbolic_input = item.get('value')
                 counter += 1
         return self.args
 
@@ -1250,6 +1340,79 @@ class VulnerabilityExplorer(MainExplorer):
             return 'big'
         return 'little'
 
+    def _make_symbolic(self, params):
+        """
+        Parameters
+        ----------
+        params : list
+            list of results after function params UI provided
+        
+        Return
+        ------
+            Return pattern string
+        """
+
+        plen = 0
+        for p in params:
+            if p['symbolic'] == 1:
+                plen = p['len']
+                binja.log_info("[+] symbolic size {}:{}".format(p['param'], plen))
+                flag_chars = [claripy.BVS('symbolic_input_%d' % i, 8) for i in range(plen)]
+                p['chars'] = flag_chars
+                p['value'] = claripy.Concat(*flag_chars)
+        return plen
+
+    def _make_constraints(self, state, params):
+        result = 0
+        for p in params:
+            if p['symbolic'] == 1:
+                flag_chars = p['chars']
+                if p['printable']:
+                    for k in flag_chars:
+                        state.solver.add(k <= 0x7f)
+                        state.solver.add(k >= 0x20)
+
+        binja.log_info("[+] symbolic size: {0}".format(result))
+        return result
+                
+    def _pattern_create(self, params):
+        """
+        Parameters
+        ----------
+        params : list
+            list of results after function params UI provided
+        
+        Return
+        ------
+            Return pattern string
+        """
+
+        counter = 0
+        result = 0
+        for p in params:
+            if p['pattern_create'] == 1:
+                counter += 1
+        if counter >= 1:
+            result = p['len']
+            for p in params:
+                if p['pattern_create'] == 1:
+                    p['value'] = pattern_gen(result)
+        binja.log_info("[+] pattern size: {0}".format(result))
+        return result
+
+    def _display_converted_params(self, params):
+        """
+        Parameters
+        ----------
+        params : list
+            list of params to display at console log
+        """
+        for p in params:
+            for k, v in p.items():
+                if hasattr(v,'__len__') and len(v) > 512:
+                    v = "<TOO LONG>"
+                binja.log_info("[+] {0}: {1}".format(k, v))
+
     def feed_function_state(self, params):
         """
         Parameters
@@ -1260,10 +1423,18 @@ class VulnerabilityExplorer(MainExplorer):
         ------
            angr function SimState state
         """
-        #print(f"Starting function {hex(self.func_start_addr)} with prototype: {self.prototype}")
-        #print(f"Params:{params}")
-        self.state = self.proj.factory.call_state(
-            self.func_start_addr, *params, prototype=self.prototype, initial_prefix="ZZZ", add_options=add_options)
+        binja.log_info(f"Starting function {hex(self.func_start_addr)} with prototype: {self.prototype}")
+        binja.log_debug(f"Params:{params}")
+        # self._make_symbolic(params)
+        # self._pattern_create(params)
+        # self._display_converted_params(params)
+        self.state = self.proj.factory.call_state( \
+            self.func_start_addr, *params, \
+            ret_addr = self.proj.loader.min_addr,
+            prototype=self.prototype, initial_prefix="ZZZ", \
+            add_options=add_options)
+        self._make_constraints(self.state, self.original_args)
+        self.state.libc.buf_symbolic_bytes = 0xFF
         return self.state
 
     def set_sim_manager(self, state):
@@ -1321,10 +1492,96 @@ class VulnerabilityExplorer(MainExplorer):
                 pattern = pattern.decode("ascii")
         except:
             return False
+
         try:
-            return cyclic.cyclic_find(pattern) > -1
-        except:
             return cyclic.cyclic_find(pattern, len(pattern)) > -1
+        except:
+            return cyclic.cyclic_find(pattern) > -1
+
+    def _solve_symbolic_param(self,  copypath, key, symbolic_input):
+        # print(f"Solving for path:{copypath} symb:{symbolic_input}")
+        solution = copypath.solver.eval(symbolic_input, cast_to=bytes)
+        binja.log_warn(
+            "[*] Solution found {}:{}".format(key, solution))
+
+    def _solve_symbolic_params(self, copypath):
+        for param in self.params:
+            if param['symbolic']:
+                self._solve_symbolic_param(copypath, param['param'], param['value'])
+
+    def _solve_symbolic_param_for_reg(self, arg, copypath, symbolic_input, report):
+        # print(f"Solving for arg:{arg} path:{copypath} symb:{symbolic_input}")
+        stack_smash = copypath.solver.eval(symbolic_input, cast_to=bytes)
+        try:
+            index = stack_smash.index(b"AAAAAAAA")
+            self.symbolic_padding = stack_smash[:index]
+            binja.log.log_info(f"Found symbolic padding: {self.symbolic_padding}")
+            binja.log.log_info(f"Successfully Smashed the Stack, Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
+        except ValueError:
+            binja.log.log_warn(f"Could not find index of {arg} overwrite")
+            return
+        
+        # TODO: is_pc_register
+        if((arg == 'rip' or arg=='rbp')):
+            binja.log_warn("[*] Buffer overflow detected !!!")
+            binja.log_warn(
+                "[*] We can control ${0} using {1} as payload !!!!".format(arg, stack_smash))
+            report[arg] = stack_smash
+        else:
+            binja.log_warn(
+                "[+] Register ${0} overwritten using {1} as payload".format(arg, stack_smash))
+            report[arg] = stack_smash
+    
+    def _solve_symbolic_params_for_reg(self, arg, copypath, report):
+        for param in self.params:
+            if param['symbolic']:
+                self._solve_symbolic_param_for_reg(arg, copypath, param['value'], report)
+
+    def _identify_overflow_symbolic(self, found, registers=[], silence=False, *exclude):
+        """
+        Parameters
+        ----------
+        found : angr SimState 
+
+        registers: list
+            list of CPU registers for binary
+        
+        silence: boolean
+            if True log will display even if overflow not found
+
+        *exclude: variable list
+            list of CPU registers to exclude from overflow lookup
+        """
+    
+        print("Trying to identify overflow by symbolic!")
+        data = []
+        report = {}
+        if(len(exclude) > 0):
+            data = [x for x in registers if x not in exclude]
+        else:
+            data = registers
+        binja.log_debug("Registers to check:{}".format(",".join(data)))
+        for arg in data:
+            print("arg:{}".format(arg))
+            binja.log_debug("reg:{}".format(found.regs.get(arg)))
+            binja.log_debug("params:{}".format(self.params))
+            copypath = found.copy()
+            regv = copypath.regs.get(arg)
+            print(f"regv:{regv}")
+            copypath.add_constraints( regv == b'AAAAAAAA')
+            print(copypath)
+            if copypath.satisfiable():
+                binja.log_debug("satisfiable")
+                self._solve_symbolic_params_for_reg(arg, copypath, report)
+            else:
+                if(not silence):
+                    binja.log_info(
+                        "[-] Register ${0} is not controlled by ANGR".format(arg))
+        if(bool(report)):
+            interaction.show_markdown_report(
+                "Vulnerability Info Report", self.get_vuln_report(report))
+        print("Trying to identify overflow symbolic end!")
+
 
     def _identify_overflow(self, found, registers=[], silence=False, *exclude):
         """
@@ -1349,22 +1606,23 @@ class VulnerabilityExplorer(MainExplorer):
             data = [x for x in registers if x not in exclude]
         else:
             data = registers
-        # print("data", data)
+        print("data", data)
         for arg in data:
             pattern = found.solver.eval(found.regs.get(arg).reversed, cast_to=bytes)
             pattern2 = found.solver.eval(found.regs.get(arg), cast_to=bytes)
-            # print("arg:{}".format(arg))
-            # print("pattern:{}".format(pattern))
-            # print("params:{}".format(self.params))
+            binja.log_debug("arg:{}".format(arg))
+            binja.log_debug("pattern:{}".format(pattern))
+            binja.log_debug("params:{}".format(self.params))
             if self._find_pattern(self.params, pattern) or self._find_pattern(self.params, pattern2):
+                # TODO: arch specific PC
                 if((arg == 'rip' or arg=='rbp') and pattern_search(pattern.decode())):
                     binja.log_warn("[*] Buffer overflow detected !!!")
                     binja.log_warn(
-                        "[*] We can control ${0} after {1} bytes !!!!".format(arg, pattern_search(pattern.decode())))
+                        "[*] We can control ${0} using {1} as payload !!!!".format(arg, pattern_search(pattern.decode())))
                     report[arg] = pattern_search(pattern.decode())
                 else:
                     binja.log_warn(
-                        "[+] Register ${0} overwritten after: {1} bytes".format(arg, pattern_search(pattern.decode())))
+                        "[+] Register ${0} overwritten using {1} as payload".format(arg, pattern_search(pattern.decode())))
                     report[arg] = pattern_search(pattern.decode())
             else:
                 if(not silence):
@@ -1373,8 +1631,7 @@ class VulnerabilityExplorer(MainExplorer):
         if(bool(report)):
             interaction.show_markdown_report(
                 "Vulnerability Info Report", self.get_vuln_report(report))
-        #print("Trying to identify overflow end!")
-        return True
+        binja.log_debug("Trying to identify overflow end!")
 
     def get_vuln_report(self, report):
         """
@@ -1467,7 +1724,9 @@ class ROPExplorer(MainExplorer):
 
     def feed_function_state(self, args=None, data=None):
         self.state = self.proj.factory.call_state(
-            self.func_start_addr, args['arg1'], prototype=self.prototype, initial_prefix="ZZZ", add_options=add_options)
+            self.func_start_addr, args['arg1'], \
+            ret_addr=MAGIC_RETADDR, prototype=self.prototype, \
+            initial_prefix="ZZZ", add_options=add_options)
         return self.state
 
     def set_sim_manager(self, state):
@@ -1593,7 +1852,7 @@ class ROPExplorer(MainExplorer):
         test = sm.found
         if len(test) > 0:
             print(sm.found)
-            found = sm.found[0]
+            found = sm.found[-1]
             print("found", found)
             UIPlugin.dump_regs(found, registers[self.bv.arch.name])
 
