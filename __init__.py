@@ -33,7 +33,7 @@ os.environ['PWNLIB_NOTERM'] = 'True'
 from pwnlib.util import cyclic
 
 import logging
-logging.getLogger('angr').setLevel('ERROR')
+logging.getLogger('angr').setLevel('WARNING')
 
 add_options={angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, \
             angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS, \
@@ -634,7 +634,7 @@ class UIPlugin(PluginCommand):
         addr: BinaryView address
         """
         #func = bv.get_function_at(addr)
-        binja.log_debug('addr', hex(addr))
+        #binja.log_debug('addr', hex(addr))
         # if(func == None or type(func) != binja.function.Function):
         #     print(f"{func} {type(func)}")
         #     self.display_message("Error", "This is not a function!")
@@ -1050,7 +1050,7 @@ class VulnerabilityExplorer(MainExplorer):
                 print(f"Exploration finished! Came to 0x0 address")
                 return True
         else:
-            if pc == self.func_end_addr:
+            if pc == self.func_end_addr or pc == self.proj.loader.min_addr:
                 print(f"Exploration finished! at {hex(pc)} RVA:{hex(self.rva(pc))}")
                 #UIPlugin.dump_regs(state, registers[self.bv.arch.name])
                 return True
@@ -1130,12 +1130,15 @@ class VulnerabilityExplorer(MainExplorer):
         binja.log_debug("[*] Check pattern memory corruption step")
         #self.step_debug(simgr)
         for state in simgr.active:
-            pattern = state.solver.eval(state.regs.pc.reversed, cast_to=bytes)
-            pattern2 = state.solver.eval(state.regs.pc, cast_to=bytes)
+            pc = state.regs.pc
+            pattern = state.solver.eval(pc.reversed, cast_to=bytes)
+            pattern2 = state.solver.eval(pc, cast_to=bytes)
             if self._find_pattern(self.params, pattern):
+                print(f"Memory corruption found at {pc} with value {pattern}")
                 simgr.stashes["mem_corrupt"].append(state)
                 simgr.drop(stash="active")
             if self._find_pattern(self.params, pattern2):
+                print(f"Memory corruption found at {pc} with value {pattern2}")
                 simgr.stashes["mem_corrupt"].append(state)
                 simgr.drop(stash="active")
         binja.log_debug("step done")
@@ -1144,6 +1147,7 @@ class VulnerabilityExplorer(MainExplorer):
     def check_stack_chk_fail(self, state):
         binja.log.log_error("Found a StackOverflow - catched by __stack_chk_fail")
         self.simgr.stashes["mem_corrupt"].append(state)
+        #self.simgr.drop(stash="active")
 
     def analyze_printf_x86_64(self, state):
         # Check if rsi is not a string
@@ -1162,19 +1166,21 @@ class VulnerabilityExplorer(MainExplorer):
             self.simgr.stashes["format_strings"].append(state)
 
     def generate_script_template(self):
-        tmpl = f"""
+        print("=====================SCRIPT TEMPLATE=========================")
+        print(f"""
         START_ADDR = {hex(self.rva(self.func_start_addr))}
         END_ADDR = {hex(self.rva(self.func_end_addr))}
         PROTOTYPE = "{self.prototype}"
         AVOID = {self.avoid_addresses}
         LD_PATH = {self.ld_path}
         USE_SIM = {self.use_sim_procedures}
-    """
-        return tmpl
+    """)
+        print("=====================SCRIPT END=============================")
+        
 
     def hook_printf(self):
         # may check for other logging functions
-        print("Setting hook for prinf")
+        print("Setting hook for printf")
         if self.arch == 'x86_64':
             if self.proj.loader.main_object.get_symbol("printf") is not None:
                 self.proj.hook_symbol("printf", self.analyze_printf_x86_64)
@@ -1193,7 +1199,9 @@ class VulnerabilityExplorer(MainExplorer):
 
     def generate_avoid_addresses(self):
         avoid = []
-        avoid.append(self.proj.loader.min_addr)
+        if self.overflow:
+            print(f"Buffer overflow mode, adding {hex(self.proj.loader.min_addr)} to avoid addresses")
+            avoid.append(self.proj.loader.min_addr)
         for addr in self.avoid_addresses:
             va = addr + self.proj.loader.min_addr
             print(f"Avoid address: {hex(va)}")
@@ -1202,14 +1210,12 @@ class VulnerabilityExplorer(MainExplorer):
 
     def run(self):
         print("VulnerabilityExplorer start")
-        print("=====================SCRIPT TEMPLATE=========================")
-        print(self.generate_script_template())
-        print("=====================SCRIPT END=============================")
+        self.generate_script_template()
         self.simgr.stashes["mem_corrupt"] = []
         self.simgr.stashes["format_strings"] = []
 
-        # self.hook_printf()
-        # self.hook_stack_chk_fail()
+        self.hook_printf()
+        self.hook_stack_chk_fail()
 
         if self.overflow:
             # use symbolic search for buffer overflows
@@ -1269,6 +1275,10 @@ class VulnerabilityExplorer(MainExplorer):
             self._solve_symbolic_params(state)
             self._identify_overflow_symbolic(state, registers[self.bv.arch.name])
             self._identify_overflow(state, registers[self.bv.arch.name])
+
+        print("Unsat states")
+        if sm.unsat:
+            print("[*] One of these is false: ", sm.unsat[0].solver.unsat_core())
 
         print("VulnerabilityExplorer done")
 
@@ -1413,6 +1423,16 @@ class VulnerabilityExplorer(MainExplorer):
                     v = "<TOO LONG>"
                 binja.log_info("[+] {0}: {1}".format(k, v))
 
+    def _fix_buffers(self, state, params):
+        for p in params:
+            if p['symbolic']:
+                l = p['len']
+                state.libc.buf_symbolic_bytes = max(l, state.libc.buf_symbolic_bytes)
+                state.libc.max_str_len = max(l, state.libc.max_str_len)
+        print(f"buf_symbolic_bytes set to {hex(state.libc.buf_symbolic_bytes)}")
+        print(f"max_strlen set to {hex(state.libc.max_str_len)}")
+
+
     def feed_function_state(self, params):
         """
         Parameters
@@ -1434,7 +1454,8 @@ class VulnerabilityExplorer(MainExplorer):
             prototype=self.prototype, initial_prefix="ZZZ", \
             add_options=add_options)
         self._make_constraints(self.state, self.original_args)
-        self.state.libc.buf_symbolic_bytes = 0xFF
+        # TODO: check if doesn't break anything
+        #self._fix_buffers(self.state, self.original_args)
         return self.state
 
     def set_sim_manager(self, state):
