@@ -10,6 +10,7 @@ from binaryninja.highlight import HighlightColor
 from binaryninja.enums import HighlightStandardColor, MessageBoxButtonSet, MessageBoxIcon
 from binaryninja.plugin import PluginCommand, BackgroundTaskThread, BackgroundTask
 import binaryninja.interaction as interaction
+from binaryninja.mediumlevelil import MediumLevelILConst
 from binaryninja.interaction import get_save_filename_input, show_message_box
 import binaryninja as binja
 from binaryninja import log
@@ -650,7 +651,9 @@ class UIPlugin(PluginCommand):
     def step_up(self, var, func_caller, visited, level=0):
         visited.add(func_caller)
         if isinstance(var, binja.variable.Variable):
-            next_instr = func_caller.mlil.get_var_definitions(var)[0]
+            defs = func_caller.mlil.get_var_definitions(var)
+            if defs:
+                next_instr = defs[0]
         else:
             next_instr = func_caller.mlil.get_ssa_var_definition(var)
         if next_instr:
@@ -688,12 +691,15 @@ class UIPlugin(PluginCommand):
                     function.name,hex(function.start),func_ssa))
                 for param in func_ssa.params:
                     visited = set()
-                    print("Current param {0}".format(param))
+                    binja.log_debug("Current param {0}".format(param))
                     if function in visited:
                         binja.log_info(f"Already visited:{function}")
                         continue
                     else:
-                        self.step_up(param.src, function,visited)
+                        if hasattr(param, 'src'):
+                            self.step_up(param.src, function,visited)
+                        else:
+                            print("CONST: {}".format(param.value))
             except AttributeError as e:
                 binja.log_info("Error, {0}".format(e))
                 pass
@@ -1307,9 +1313,9 @@ class VulnerabilityExplorer(MainExplorer):
 
         print("Errored states")
         for state in self.simgr.errored:
-            # pprint.pprint(state.error)
-            # pprint.pprint(state.traceback)
-            # pprint.pprint(state.state)
+            pprint.pprint(state.error)
+            pprint.pprint(state.traceback)
+            pprint.pprint(state.state)
             UIPlugin.dump_regs(state.state, registers[self.bv.arch.name]) 
             self._solve_symbolic_params(state.state)
             if self.overflow:
@@ -1318,7 +1324,7 @@ class VulnerabilityExplorer(MainExplorer):
             
         print("Unconstrainted states")
         for state in self.simgr.unconstrained:
-            # pprint.pprint(state)
+            pprint.pprint(state)
             UIPlugin.dump_regs(state, registers[self.bv.arch.name]) 
             self._solve_symbolic_params(state)
             if self.overflow:
@@ -1582,11 +1588,17 @@ class VulnerabilityExplorer(MainExplorer):
             if param['symbolic']:
                 self._solve_symbolic_param(copypath, param['param'], param['value'])
 
+    def get_smashed_pc(self):
+        if self.bv.arch.default_int_size == 4:
+            return b'BBBB'
+        elif self.bv.arch.default_int_size == 8:
+            return b'BBBBBBBB'
+
     def _solve_symbolic_param_for_reg(self, arg, copypath, symbolic_input, report):
         # print(f"Solving for arg:{arg} path:{copypath} symb:{symbolic_input}")
         stack_smash = copypath.solver.eval(symbolic_input, cast_to=bytes)
         try:
-            index = stack_smash.index(b"BBBBBBBB")
+            index = stack_smash.index(self.get_smashed_pc())
             self.symbolic_padding = stack_smash[:index]
             binja.log.log_info(f"Found symbolic padding: {self.symbolic_padding}")
             binja.log.log_info(f"Successfully Smashed the Stack, Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
@@ -1641,7 +1653,7 @@ class VulnerabilityExplorer(MainExplorer):
             copypath = found.copy()
             regv = copypath.regs.get(arg)
             binja.log_debug(f"regv:{regv}")
-            copypath.add_constraints( regv == b'BBBBBBBB')
+            copypath.add_constraints( regv == self.get_smashed_pc())
             print(copypath)
             if copypath.satisfiable():
                 binja.log_debug("satisfiable")
