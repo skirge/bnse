@@ -1192,10 +1192,10 @@ class VulnerabilityExplorer(MainExplorer):
         print("Setting hook for __stack_chk_fail")
         symb = self.proj.loader.main_object.get_symbol("__stack_chk_fail") 
         if symb is not None:
-            if len(symb)==1:
-                self.proj.hook_symbol("__stack_chk_fail", self.check_stack_chk_fail)
-            else:
+            if isinstance(symb, list):
                 binja.log.log_error("[-] Multiple symbols for stack_chk_fail found!")
+            else:
+                self.proj.hook_symbol("__stack_chk_fail", self.check_stack_chk_fail)
 
     def generate_avoid_addresses(self):
         avoid = []
@@ -1627,7 +1627,7 @@ class VulnerabilityExplorer(MainExplorer):
             data = [x for x in registers if x not in exclude]
         else:
             data = registers
-        print("data", data)
+        binja.log_debug("Registers to check:{}".format(",".join(data)))
         for arg in data:
             pattern = found.solver.eval(found.regs.get(arg).reversed, cast_to=bytes)
             pattern2 = found.solver.eval(found.regs.get(arg), cast_to=bytes)
@@ -1669,7 +1669,7 @@ class VulnerabilityExplorer(MainExplorer):
 
         contents = "==== Vulnerability Report ====\r\n\n"
         for key, value in report.items():
-            if(key == 'ra'):
+            if(key == 'rip' or key=='ra'):
                 contents += "[*] Buffer overflow detected !!!\r\n\n"
                 contents += "We can control ${0} after {1} bytes !!!!\r\n\n".format(
                     key, value)
