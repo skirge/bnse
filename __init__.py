@@ -1142,6 +1142,7 @@ class VulnerabilityExplorer(MainExplorer):
         if simgr.unconstrained:
             print("[*] Step check mem corruption - unconstrained path")
             for path in simgr.unconstrained:
+                simgr.stashes["unconstrained"].remove(path)
                 if self.exploitable(path):
                     print(f"Fully exploitable at {path}")
                     simgr.stashes['mem_corrupt'].append(path)
@@ -1151,7 +1152,6 @@ class VulnerabilityExplorer(MainExplorer):
                     print(f"Partially exploitable at {path}")
                     simgr.stashes['mem_corrupt'].append(path)
                     simgr.drop(stash="active")
-                simgr.stashes["unconstrained"].remove(path)
 
         if simgr.errored:
             print("[*] Step check mem corruption - errored path")
