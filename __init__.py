@@ -661,7 +661,7 @@ class UIPlugin(PluginCommand):
             var_read = next_instr.ssa_form.vars_read
             if var_read:
                 for v in var_read:
-                    print(indent(level),v)
+                    # print(indent(level),v)
                     self.step_up(v, func_caller,visited, level+1)
 
 
@@ -1504,13 +1504,13 @@ class VulnerabilityExplorer(MainExplorer):
         # self._pattern_create(params)
         # self._display_converted_params(params)
         self.state = self.proj.factory.call_state( \
-            self.func_start_addr, *params, \
+            self.func_start_addr if self.arch!='thumb2' else self.func_start_addr|1, *params, \
             ret_addr = self.proj.loader.min_addr,
             prototype=self.prototype, initial_prefix="ZZZ", \
             add_options=add_options)
         self._make_constraints(self.state, self.original_args)
         # TODO: check if doesn't break anything
-        #self._fix_buffers(self.state, self.original_args)
+        self._fix_buffers(self.state, self.original_args)
         return self.state
 
     def set_sim_manager(self, state):
@@ -1654,7 +1654,7 @@ class VulnerabilityExplorer(MainExplorer):
             regv = copypath.regs.get(arg)
             binja.log_debug(f"regv:{regv}")
             copypath.add_constraints( regv == self.get_smashed_pc())
-            print(copypath)
+            # print(copypath)
             if copypath.satisfiable():
                 binja.log_debug("satisfiable")
                 self._solve_symbolic_params_for_reg(arg, copypath, report)
