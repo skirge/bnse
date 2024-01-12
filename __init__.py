@@ -1107,21 +1107,30 @@ class VulnerabilityExplorer(MainExplorer):
             print("[*] Step check mem corruption - unconstrained path")
             for path in simgr.unconstrained:
                 if self.exploitable(path):
+                    print(f"Fully exploitable at {path}")
                     simgr.stashes['mem_corrupt'].append(path)
+                    simgr.drop(stash="active")
+                    break
+                if self.partially_exploitable(path):
+                    print(f"Partially exploitable at {path}")
+                    simgr.stashes['mem_corrupt'].append(path)
+                    simgr.drop(stash="active")
                 simgr.stashes["unconstrained"].remove(path)
-                simgr.drop(stash="active")
 
-        # if simgr.active:
-        #     path = simgr.active[0]
-        #     if self.exploitable(path):
-        #         simgr.stashes['mem_corrupt'].append(path)
-        #         #simgr.drop(stash="active")
-        #
-        # if simgr.errored:
-        #     print("[*] Step check mem corruption - errored path")
-        #     path = simgr.errored[0].state
-        #     if self.exploitable(path):
-        #         simgr.stashes['mem_corrupt'].append(path)
+        if simgr.errored:
+            print("[*] Step check mem corruption - errored path")
+            for err in simgr.errored:
+                path = err.state
+                print(path)
+                if self.exploitable(path):
+                    print(f"Fully exploitable at {path}")
+                    simgr.stashes['mem_corrupt'].append(path)
+                    simgr.drop(stash="active")
+                    break
+                if self.partially_exploitable(path):
+                    print(f"Partially exploitable at {path}")
+                    simgr.stashes['mem_corrupt'].append(path)
+                    simgr.drop(stash="active")
 
         binja.log_debug("step done")
         return simgr
