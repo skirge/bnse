@@ -1230,7 +1230,7 @@ class VulnerabilityExplorer(MainExplorer):
             if self.proj.loader.main_object.get_symbol("printf") is not None:
                 self.proj.hook_symbol("printf", self.analyze_printf_x86_64)
         else:
-            raise "Unsupported arch for printf hook!"
+            print("Unsupported arch for printf hook!")
 
     def hook_stack_chk_fail(self):
         # TODO: some bug on MacOS in CLE
@@ -1595,7 +1595,7 @@ class VulnerabilityExplorer(MainExplorer):
             return
         
         # TODO: is_pc_register
-        if((arg == 'rip' or arg=='rbp')):
+        if((arg == 'rip' or arg=='rbp' or arg=='pc')):
             binja.log_warn("[*] Buffer overflow detected !!!")
             binja.log_warn(
                 "[*] We can control ${0} using {1} as payload !!!!".format(arg, stack_smash))
@@ -1635,12 +1635,12 @@ class VulnerabilityExplorer(MainExplorer):
             data = registers
         binja.log_debug("Registers to check:{}".format(",".join(data)))
         for arg in data:
-            print("arg:{}".format(arg))
+            binja.log_debug("arg:{}".format(arg))
             binja.log_debug("reg:{}".format(found.regs.get(arg)))
             binja.log_debug("params:{}".format(self.params))
             copypath = found.copy()
             regv = copypath.regs.get(arg)
-            print(f"regv:{regv}")
+            binja.log_debug(f"regv:{regv}")
             copypath.add_constraints( regv == b'BBBBBBBB')
             print(copypath)
             if copypath.satisfiable():
@@ -1688,7 +1688,7 @@ class VulnerabilityExplorer(MainExplorer):
             binja.log_debug("params:{}".format(self.params))
             if self._find_pattern(self.params, pattern) or self._find_pattern(self.params, pattern2):
                 # TODO: arch specific PC
-                if((arg == 'rip' or arg=='rbp') and pattern_search(pattern.decode())):
+                if((arg == 'rip' or arg=='rbp' or arg=='ra' or arg=='pc') and pattern_search(pattern.decode())):
                     binja.log_warn("[*] Buffer overflow detected !!!")
                     binja.log_warn(
                         "[*] We can control ${0} using {1} as payload !!!!".format(arg, pattern_search(pattern.decode())))
@@ -1721,7 +1721,7 @@ class VulnerabilityExplorer(MainExplorer):
 
         contents = "==== Vulnerability Report ====\r\n\n"
         for key, value in report.items():
-            if(key == 'rip' or key=='ra'):
+            if(key == 'rip' or key=='ra' or key=='pc'):
                 contents += "[*] Buffer overflow detected !!!\r\n\n"
                 contents += "We can control ${0} after {1} bytes !!!!\r\n\n".format(
                     key, value)
