@@ -1247,7 +1247,8 @@ class VulnerabilityExplorer(MainExplorer):
             print(found)
             UIPlugin.dump_regs(found, registers[self.bv.arch.name]) 
             self._solve_symbolic_params(found)
-            self._identify_overflow_symbolic(found, registers[self.bv.arch.name])
+            if self.overflow:
+                self._identify_overflow_symbolic(found, registers[self.bv.arch.name])
             self._identify_overflow(found, registers[self.bv.arch.name])
 
         if len(self.simgr.stashes["mem_corrupt"])>0:
@@ -1256,7 +1257,8 @@ class VulnerabilityExplorer(MainExplorer):
             print(found)
             UIPlugin.dump_regs(found, registers[self.bv.arch.name]) 
             self._solve_symbolic_params(found)
-            self._identify_overflow_symbolic(found, registers[self.bv.arch.name])
+            if self.overflow:
+                self._identify_overflow_symbolic(found, registers[self.bv.arch.name])
             self._identify_overflow(found, registers[self.bv.arch.name])
 
         if len(self.simgr.stashes["format_strings"])>0:
@@ -1269,20 +1271,22 @@ class VulnerabilityExplorer(MainExplorer):
 
         print("Errored states")
         for state in self.simgr.errored:
-            pprint.pprint(state.error)
-            pprint.pprint(state.traceback)
-            pprint.pprint(state.state)
+            # pprint.pprint(state.error)
+            # pprint.pprint(state.traceback)
+            # pprint.pprint(state.state)
             UIPlugin.dump_regs(state.state, registers[self.bv.arch.name]) 
             self._solve_symbolic_params(state.state)
-            self._identify_overflow_symbolic(state.state, registers[self.bv.arch.name])
+            if self.overflow:
+                self._identify_overflow_symbolic(state.state, registers[self.bv.arch.name])
             self._identify_overflow(state.state, registers[self.bv.arch.name])
             
         print("Unconstrainted states")
         for state in self.simgr.unconstrained:
-            pprint.pprint(state)
+            # pprint.pprint(state)
             UIPlugin.dump_regs(state, registers[self.bv.arch.name]) 
             self._solve_symbolic_params(state)
-            self._identify_overflow_symbolic(state, registers[self.bv.arch.name])
+            if self.overflow:
+                self._identify_overflow_symbolic(state, registers[self.bv.arch.name])
             self._identify_overflow(state, registers[self.bv.arch.name])
 
         print("Unsat states")
@@ -1543,7 +1547,7 @@ class VulnerabilityExplorer(MainExplorer):
         # print(f"Solving for arg:{arg} path:{copypath} symb:{symbolic_input}")
         stack_smash = copypath.solver.eval(symbolic_input, cast_to=bytes)
         try:
-            index = stack_smash.index(b"AAAAAAAA")
+            index = stack_smash.index(b"BBBBBBBB")
             self.symbolic_padding = stack_smash[:index]
             binja.log.log_info(f"Found symbolic padding: {self.symbolic_padding}")
             binja.log.log_info(f"Successfully Smashed the Stack, Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
@@ -1598,7 +1602,7 @@ class VulnerabilityExplorer(MainExplorer):
             copypath = found.copy()
             regv = copypath.regs.get(arg)
             print(f"regv:{regv}")
-            copypath.add_constraints( regv == b'AAAAAAAA')
+            copypath.add_constraints( regv == b'BBBBBBBB')
             print(copypath)
             if copypath.satisfiable():
                 binja.log_debug("satisfiable")
