@@ -28,10 +28,6 @@ with open(os.path.dirname(__file__)+'/registers.json') as f:
 
 from string import ascii_uppercase, ascii_lowercase, digits
 
-import os
-os.environ['PWNLIB_NOTERM'] = 'True'
-from pwnlib.util import cyclic
-
 import logging
 logging.getLogger('angr').setLevel('WARNING')
 
@@ -53,6 +49,8 @@ def get_named_type(func):
                   + ')')
     return named_type
 
+MAX_PATTERN_LENGTH = 20280
+
 class MaxLengthException(Exception):
     pass
 
@@ -60,7 +58,22 @@ class WasNotFoundException(Exception):
     pass
 
 def pattern_gen(length):
-    return cyclic.cyclic(length)
+    """
+    Generate a pattern of a given length up to a maximum
+    of 20280 - after this the pattern would repeat
+    """
+    if length >= MAX_PATTERN_LENGTH:
+        raise MaxLengthException('ERROR: Pattern length exceeds maximum of %d' % MAX_PATTERN_LENGTH)
+
+    pattern = ''
+    for upper in ascii_uppercase:
+        for lower in ascii_lowercase:
+            for digit in digits:
+                if len(pattern) < length:
+                    pattern += upper+lower+digit
+                else:
+                    out = pattern[:length]
+                    return out
 
 def p32(data, endian="big"):
     if endian == "big":
@@ -75,10 +88,33 @@ def u32(data, endian="big"):
         return hex(struct.unpack('<I', data)[0])
 
 def pattern_search(search_pattern):
+    """
+    Search for search_pattern in pattern.  Convert from hex if needed
+    Looking for needle in haystack
+    """
+    needle = search_pattern
+
     try:
-        return cyclic.cyclic_find(search_pattern, len(search_pattern))
-    except:
-        return cyclic.cyclic_find(search_pattern)
+        if needle.startswith('0x'):
+            # Strip off '0x', convert to ASCII and reverse
+            needle = needle[2:]
+            needle = bytearray.fromhex(needle).decode('ascii')
+            needle = needle[::-1]
+    except (ValueError, TypeError) as e:
+        raise
+
+    haystack = ''
+    for upper in ascii_uppercase:
+        for lower in ascii_lowercase:
+            for digit in digits:
+                haystack += upper+lower+digit
+                found_at = haystack.find(needle)
+                if found_at > -1:
+                    return found_at
+
+    raise WasNotFoundException('Couldn`t find %s (%s) anywhere in the pattern.' %
+          (search_pattern, needle))
+
 
 class Explorer(ABC):
     """
@@ -1010,7 +1046,7 @@ class VulnerabilityExplorer(MainExplorer):
     """
     
     def __init__(self, bv, func_start_addr, func_end_addr, prototype, avoid_addresses=[], ld_path=[], use_system_libs=False, use_sim_procedures=False):
-        binja.log_debug(f"Initializing VulnerabilityExplorer with params bv:{bv} start:{func_start_addr} end:{func_end_addr} prot:{prototype} avoid:{avoid_addresses} ld_path:{ld_path} use_system_libs:{use_system_libs} use_sim_procedures:{use_sim_procedures}")
+        binja.log_info(f"Initializing VulnerabilityExplorer with params bv:{bv} start:{func_start_addr} end:{func_end_addr} prot:{prototype} avoid:{avoid_addresses} ld_path:{ld_path} use_system_libs:{use_system_libs} use_sim_procedures:{use_sim_procedures}")
         self.bv = bv
         self.arch = bv.arch.name
         self.use_sim_procedures = use_sim_procedures
@@ -1519,13 +1555,16 @@ class VulnerabilityExplorer(MainExplorer):
             True if pattern find
         """
 
-        # TODO: pattern should be printable
-        # may add additional parameter for that
-        try:
-            if isinstance(pattern, bytes):
-                pattern = pattern.decode("ascii")
-        except:
-            return False
+        for item in params:
+            if item.get('symbolic'):
+                break
+            v = item.get('value')
+            if isinstance(v, int):
+                v = str(v)
+            dest = v.encode()
+            if pattern in dest:
+                return True
+        return False
 
         try:
             return cyclic.cyclic_find(pattern, len(pattern)) > -1
