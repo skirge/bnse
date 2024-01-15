@@ -650,6 +650,7 @@ class UIPlugin(PluginCommand):
 
     def step_up(self, var, func_caller, visited, level=0):
         visited.add(func_caller)
+        next_instr = None
         if isinstance(var, binja.variable.Variable):
             defs = func_caller.mlil.get_var_definitions(var)
             if defs:
@@ -657,6 +658,9 @@ class UIPlugin(PluginCommand):
         else:
             next_instr = func_caller.mlil.get_ssa_var_definition(var)
         if next_instr:
+            if next_instr.address in visited:
+                return
+            visited.add(next_instr.address)
             print(indent(level),hex(next_instr.address), next_instr)
             var_read = next_instr.ssa_form.vars_read
             if var_read:
@@ -703,6 +707,7 @@ class UIPlugin(PluginCommand):
             except AttributeError as e:
                 binja.log_info("Error, {0}".format(e))
                 pass
+        print("Find Arg Origin DONE")
 
         # binja.log_info("Func callers {0}".format(func.callers))
         # func_caller = func.callers[0]
@@ -1064,7 +1069,7 @@ class VulnerabilityExplorer(MainExplorer):
         self.func_start_addr = self.proj.loader.min_addr + func_start_addr
         self.func_end_addr = self.proj.loader.min_addr + func_end_addr
         self.prototype = prototype
-        self.cfg = self.proj.analyses.CFG(regions=[(self.func_start_addr, self.func_end_addr)])
+        #self.cfg = self.proj.analyses.CFG(regions=[(self.func_start_addr, self.func_end_addr)])
         self.args = {}
         self.overflow = False
         self.has_leak = False
@@ -1092,7 +1097,7 @@ class VulnerabilityExplorer(MainExplorer):
                 print(f"Exploration finished! Came to 0x0 address")
                 return True
         else:
-            if pc == self.func_end_addr or pc == self.proj.loader.min_addr:
+            if pc == self.func_end_addr: # or pc == self.proj.loader.min_addr:
                 print(f"Exploration finished! at {hex(pc)} RVA:{hex(self.rva(pc))}")
                 #UIPlugin.dump_regs(state, registers[self.bv.arch.name])
                 return True
@@ -1272,14 +1277,14 @@ class VulnerabilityExplorer(MainExplorer):
             # use symbolic search for buffer overflows
             print("Running in Search For Overflow mode!")
             sm = self.simgr.explore(find=self.explore, avoid=self.generate_avoid_addresses(),\
-                                    step_func=self.step_check_mem_corruption_symbolic, num_find=1,\
-                                    cfg=self.cfg)
+                                    step_func=self.step_check_mem_corruption_symbolic, num_find=1)
+            #cfg=self.cfg)
         else:
             # check with concrete pattern
             print("Running in normal mode!")
             sm = self.simgr.explore(find=self.explore,avoid=self.generate_avoid_addresses(),\
-                                    step_func=self.step_check_mem_corruption_pattern, num_find=1, \
-                                    cfg=self.cfg)
+                                    step_func=self.step_check_mem_corruption_pattern)#, \
+                                    # cfg=self.cfg)
         test = sm.found
         print("Found states")
         print(test)
